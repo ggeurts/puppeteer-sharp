@@ -72,7 +72,7 @@ namespace PuppeteerSharp
         #region Private members
 
         internal readonly Dictionary<string, Target> TargetsMap;
-        
+
         private readonly Dictionary<string, BrowserContext> _contexts;
         private readonly Func<Task> _closeCallBack;
         private readonly ILogger<Browser> _logger;
@@ -155,6 +155,22 @@ namespace PuppeteerSharp
         /// <returns>An Array of all active targets</returns>
         public Target[] Targets() => TargetsMap.Values.Where(target => target.IsInitialized).ToArray();
 
+        /// <summary>
+        /// Creates a new incognito browser context. This won't share cookies/cache with other browser contexts.
+        /// </summary>
+        /// <example>
+        /// <code>
+        /// <![CDATA[
+        /// // Create a new incognito browser context.
+        /// var context = await browser.CreateIncognitoBrowserContextAsync();
+        /// // Create a new page in a pristine context.
+        /// var page = await context.NewPageAsync();
+        /// //  Do stuff
+        /// await page.GoToAsync("https://example.com");
+        /// ]]>
+        /// </code>
+        /// </example>
+        /// <returns>A task which resolves to the context created.</returns>
         public async Task<BrowserContext> CreateIncognitoBrowserContextAsync()
         {
             var response = await Connection.SendAsync<CreateBrowserContextResponse>("Target.createBrowserContext", new { });
@@ -163,6 +179,10 @@ namespace PuppeteerSharp
             return context;
         }
 
+        /// <summary>
+        /// Returns an array of all open browser contexts. 
+        /// In a newly created browser, this will return a single instance of <see cref="BrowserContext"/>.
+        /// </summary>
         public BrowserContext[] BrowserContexts()
         {
             var allContexts = new BrowserContext[_contexts.Count + 1];
@@ -249,7 +269,8 @@ namespace PuppeteerSharp
         {
             string targetId = (await Connection.SendAsync("Target.createTarget", new Dictionary<string, object>
             {
-                ["url"] = "about:blank"
+                ["url"] = "about:blank",
+                ["browserContextId"] = string.IsNullOrEmpty(contextId) ? null : contextId
             })).targetId.ToString();
 
             var target = TargetsMap[targetId];

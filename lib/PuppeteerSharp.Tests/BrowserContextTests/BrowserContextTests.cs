@@ -41,14 +41,14 @@ namespace PuppeteerSharp.Tests.BrowserContextTests
         [Fact]
         public async Task ShouldCloseAllBelongingTargetsOnceClosingContext()
         {
-            Assert.Equal(2, (await Browser.PagesAsync()).Length);
+            Assert.Single(await Browser.PagesAsync());
 
             var context = await Browser.CreateIncognitoBrowserContextAsync();
             await context.NewPageAsync();
-            Assert.Equal(3, (await Browser.PagesAsync()).Length);
+            Assert.Equal(2, (await Browser.PagesAsync()).Length);
 
             await context.CloseAsync();
-            Assert.Equal(2, (await Browser.PagesAsync()).Length);
+            Assert.Single(await Browser.PagesAsync());
         }
 
         [Fact]
@@ -70,16 +70,16 @@ namespace PuppeteerSharp.Tests.BrowserContextTests
         {
             var context = await Browser.CreateIncognitoBrowserContextAsync();
             var events = new List<string>();
-            context.TargetCreated += (sender, e) => events.Add("CREATED" + e.Target.Url);
-            context.TargetChanged += (sender, e) => events.Add("CHANGED" + e.Target.Url);
-            context.TargetDestroyed += (sender, e) => events.Add("DESTROYED" + e.Target.Url);
+            context.TargetCreated += (sender, e) => events.Add("CREATED: " + e.Target.Url);
+            context.TargetChanged += (sender, e) => events.Add("CHANGED: " + e.Target.Url);
+            context.TargetDestroyed += (sender, e) => events.Add("DESTROYED: " + e.Target.Url);
             var page = await context.NewPageAsync();
             await page.GoToAsync(TestConstants.EmptyPage);
             await page.CloseAsync();
             Assert.Equal(new[] {
                 $"CREATED: {TestConstants.AboutBlank}",
-                $"CHANGED: ${TestConstants.EmptyPage}",
-                $"DESTROYED: ${TestConstants.EmptyPage}"
+                $"CHANGED: {TestConstants.EmptyPage}",
+                $"DESTROYED: {TestConstants.EmptyPage}"
             }, events);
             await context.CloseAsync();
         }
