@@ -26,7 +26,7 @@ namespace PuppeteerSharp
         /// Gets or sets a value indicating whether the process created by the instance is being closed.
         /// </summary>
         /// <value><c>true</c> if is the process is closed; otherwise, <c>false</c>.</value>
-        public bool IsChromeClosing => _chromiumProcess != null || _chromiumProcess.IsClosing;
+        public bool IsChromeClosing => _chromiumProcess?.IsClosing ?? false;
 
         /// <summary>
         /// Gets or sets a value indicating whether the process created by the instance is closed.
@@ -67,9 +67,8 @@ namespace PuppeteerSharp
                 await _chromiumProcess.StartAsync().ConfigureAwait(false);
                 try
                 {
-                    var keepAliveInterval = 0;
                     var connection = await Connection
-                        .Create(_chromiumProcess.EndPoint, options.SlowMo, keepAliveInterval, _loggerFactory)
+                        .Create(_chromiumProcess.EndPoint, options, _loggerFactory)
                         .ConfigureAwait(false);
 
                     var browser = await Browser
@@ -102,13 +101,8 @@ namespace PuppeteerSharp
 
             try
             {
-                var connectionDelay = options.SlowMo;
-                var keepAliveInterval = 0;
-
-                var connection = await Connection.Create(options.BrowserWSEndpoint, connectionDelay, keepAliveInterval, _loggerFactory).ConfigureAwait(false);
-
+                var connection = await Connection.Create(options.BrowserWSEndpoint, options, _loggerFactory).ConfigureAwait(false);
                 var response = await connection.SendAsync<GetBrowserContextsResponse>("Target.getBrowserContexts");
-
                 return await Browser
                     .CreateAsync(connection, response.BrowserContextIds, options.IgnoreHTTPSErrors, true, null)
                     .ConfigureAwait(false);

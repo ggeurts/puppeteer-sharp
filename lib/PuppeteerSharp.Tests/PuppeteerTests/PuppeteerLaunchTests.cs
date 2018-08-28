@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using PuppeteerSharp.Helpers;
@@ -421,6 +422,23 @@ namespace PuppeteerSharp.Tests.PuppeteerTests
                     await pages[0].WaitForNavigationAsync();
                 }
                 Assert.Equal(customUrl, pages[0].Url);
+            }
+        }
+
+        [Fact]
+        public async Task ShouldSupportCustomWebSocket()
+        {
+            var options = TestConstants.DefaultBrowserOptions();
+            var customSocketCreated = false;
+            options.WebSocketFactory = (uri, socketOptions, cancellationToken) =>
+            {
+                customSocketCreated = true;
+                return Connection.DefaultWebSocketFactory(uri, socketOptions, cancellationToken);
+            };
+
+            using (var browser = await Puppeteer.LaunchAsync(options, TestConstants.LoggerFactory))
+            {
+                Assert.True(customSocketCreated);
             }
         }
 
