@@ -110,7 +110,7 @@ namespace PuppeteerSharp
 
             return await _responses[id].TaskWrapper.Task.ConfigureAwait(false);
         }
-
+        
         internal async Task<T> SendAsync<T>(string method, dynamic args = null)
         {
             JToken response = await SendAsync(method, args).ConfigureAwait(false);
@@ -290,13 +290,16 @@ namespace PuppeteerSharp
         {
             if (SystemClientWebSocket.ManagedWebSocketRequired)
             {
+                // Fallback to managed web socket implementation, because the default
+                // implementation unfortunately does not run on the current platform
+                // (such as Windows 7, Windows Server 2008 R2).
                 var ws = new System.Net.WebSockets.Managed.ClientWebSocket();
                 ws.Options.KeepAliveInterval = keepAliveInterval;
                 return ws;
             }
             else
             {
-                var ws = new System.Net.WebSockets.Managed.ClientWebSocket();
+                var ws = new System.Net.WebSockets.ClientWebSocket();
                 ws.Options.KeepAliveInterval = keepAliveInterval;
                 return ws;
             }
