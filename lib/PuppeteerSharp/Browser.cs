@@ -74,6 +74,7 @@ namespace PuppeteerSharp
         private readonly ILogger<Browser> _logger;
         private readonly BrowserContext _defaultContext;
         private readonly ChromiumProcess _chromiumProcess;
+        private Task _closeTask;
         
         #endregion
 
@@ -131,7 +132,7 @@ namespace PuppeteerSharp
         /// <summary>
         /// Gets a value indicating if the browser is closed
         /// </summary>
-        public bool IsClosed { get; internal set; }
+        public bool IsClosed => _closeTask != null && _closeTask.IsCompleted && _closeTask.Exception != null;
 
         internal TaskQueue ScreenshotTaskQueue { get; set; }
         internal Connection Connection { get; }
@@ -234,24 +235,29 @@ namespace PuppeteerSharp
         /// Closes Chromium and all of its pages (if any were opened). The browser object itself is considered disposed and cannot be used anymore
         /// </summary>
         /// <returns>Task</returns>
-        public async Task CloseAsync()
+        public Task CloseAsync() => _closeTask ?? (_closeTask = CloseCoreAsync());
+
+        private async Task CloseCoreAsync()
         {
-            if (IsClosed)
-            {
-                return;
-            }
-
-            IsClosed = true;
-
             Connection.StopReading();
             try
             {
-                await Connection.SendAsync("Browser.close", null).ConfigureAwait(false);
+                var closeTimeout = TimeSpan.FromMilliseconds(5000);
+
+                // Initiate graceful browser close operation but don't await it just yet,
+                // because we want to ensure chromium process shutdown first.
+                var browserCloseTask = Connection.SendAsync("Browser.close", null);
 
                 if (_chromiumProcess != null)
                 {
-                    await _chromiumProcess.WaitForExitAsync().ConfigureAwait(false);
+                    // Notify chromium process that exit is expected, but should be enforced if it
+                    // doesn't occur withing the close timeout.
+                    await _chromiumProcess.EnsureExitAsync(closeTimeout).ConfigureAwait(false);
                 }
+
+                // Now we can safely await the browser close operation without risking keeping chromium
+                // process running for indeterminate period.
+                await browserCloseTask.ConfigureAwait(false);
 
                 Disconnect();
             }
@@ -397,8 +403,11 @@ namespace PuppeteerSharp
 
         #region IDisposable
 
-        /// <inheritdoc />
-        public void Dispose() => _ = CloseAsync();
+        /// <summary>
+        /// Closes <see cref="Connection"/> and any Chromium <see cref="Process"/> that was
+        /// created by Puppeteer.
+        /// </summary>
+        public void Dispose() => _ = CloseCoreAsync();
 
         #endregion
     }

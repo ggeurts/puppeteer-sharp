@@ -2,7 +2,7 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <PackOnBuild>true</PackOnBuild>
-    <PackageVersion>1.4.0</PackageVersion>
+    <PackageVersion>1.4.2</PackageVersion>
     <Authors>Darío Kondratiuk</Authors>
     <Owners>Darío Kondratiuk</Owners>
     <PackageProjectUrl>https://github.com/kblok/puppeteer-sharp</PackageProjectUrl>
@@ -10,7 +10,7 @@
     <PackageTags>headless,chrome,puppeteer</PackageTags>
     <Title>PuppeteerSharp</Title>
     <Description>Headless Chrome .NET API</Description>
-    <PackageId>PuppeteerSharp</PackageId>
+    <PackageId>Agg.Private.PuppeteerSharp</PackageId>
     <PackageReleaseNotes>
 New APIs
  

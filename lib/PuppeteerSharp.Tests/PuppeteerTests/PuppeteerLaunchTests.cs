@@ -282,7 +282,7 @@ namespace PuppeteerSharp.Tests.PuppeteerTests
 
                 await browser.CloseAsync();
 
-                Assert.True(launcher.IsChromeClosed);
+                Assert.True(launcher.Process.HasExited);
             }
         }
 
@@ -299,7 +299,8 @@ namespace PuppeteerSharp.Tests.PuppeteerTests
                 Assert.Equal(HttpStatusCode.OK, response.Status);
             }
 
-            Assert.True(launcher.IsChromeClosing || launcher.IsChromeClosed);
+            Assert.True(await launcher.Process.WaitForExitAsync(TimeSpan.FromSeconds(2)));
+            Assert.True(launcher.Process.HasExited);
         }
 
         [Fact]
