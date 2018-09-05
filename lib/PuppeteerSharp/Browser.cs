@@ -153,7 +153,7 @@ namespace PuppeteerSharp
         /// </summary>
         /// <returns>An Array of all active targets</returns>
         public Target[] Targets() => TargetsMap.Values.Where(target => target.IsInitialized).ToArray();
-        
+
         /// <summary>
         /// Creates a new incognito browser context. This won't share cookies/cache with other browser contexts.
         /// </summary>
@@ -239,27 +239,30 @@ namespace PuppeteerSharp
 
         private async Task CloseCoreAsync()
         {
-            Connection.StopReading();
             try
             {
-                var closeTimeout = TimeSpan.FromMilliseconds(5000);
-
-                // Initiate graceful browser close operation but don't await it just yet,
-                // because we want to ensure chromium process shutdown first.
-                var browserCloseTask = Connection.SendAsync("Browser.close", null);
-
-                if (_chromiumProcess != null)
+                try
                 {
-                    // Notify chromium process that exit is expected, but should be enforced if it
-                    // doesn't occur withing the close timeout.
-                    await _chromiumProcess.EnsureExitAsync(closeTimeout).ConfigureAwait(false);
+                    // Initiate graceful browser close operation but don't await it just yet,
+                    // because we want to ensure chromium process shutdown first.
+                    var browserCloseTask = Connection.SendAsync("Browser.close", null);
+
+                    if (_chromiumProcess != null)
+                    {
+                        // Notify chromium process that exit is expected, but should be enforced if it
+                        // doesn't occur withing the close timeout.
+                        var closeTimeout = TimeSpan.FromMilliseconds(5000);
+                        await _chromiumProcess.EnsureExitAsync(closeTimeout).ConfigureAwait(false);
+                    }
+
+                    // Now we can safely await the browser close operation without risking keeping chromium
+                    // process running for indeterminate period.
+                    await browserCloseTask.ConfigureAwait(false);
                 }
-
-                // Now we can safely await the browser close operation without risking keeping chromium
-                // process running for indeterminate period.
-                await browserCloseTask.ConfigureAwait(false);
-
-                Disconnect();
+                finally
+                {
+                    Disconnect();
+                }
             }
             catch (Exception ex)
             {
@@ -366,7 +369,7 @@ namespace PuppeteerSharp
 
             var target = new Target(
                 e.TargetInfo,
-                () => Connection.CreateSessionAsync(e.TargetInfo.TargetId),
+                info => Connection.CreateSessionAsync(info),
                 context);
 
             if (TargetsMap.ContainsKey(e.TargetInfo.TargetId))
@@ -407,7 +410,7 @@ namespace PuppeteerSharp
         /// Closes <see cref="Connection"/> and any Chromium <see cref="Process"/> that was
         /// created by Puppeteer.
         /// </summary>
-        public void Dispose() => _ = CloseCoreAsync();
+        public void Dispose() => _ = CloseAsync();
 
         #endregion
     }

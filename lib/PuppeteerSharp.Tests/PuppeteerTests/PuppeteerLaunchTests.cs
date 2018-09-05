@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using PuppeteerSharp.Helpers;
@@ -299,7 +298,7 @@ namespace PuppeteerSharp.Tests.PuppeteerTests
                 Assert.Equal(HttpStatusCode.OK, response.Status);
             }
 
-            Assert.True(await launcher.Process.WaitForExitAsync(TimeSpan.FromSeconds(2)));
+            Assert.True(await launcher.Process.WaitForExitAsync(TimeSpan.FromSeconds(10)));
             Assert.True(launcher.Process.HasExited);
         }
 
@@ -437,7 +436,7 @@ namespace PuppeteerSharp.Tests.PuppeteerTests
                 return Connection.DefaultWebSocketFactory(uri, socketOptions, cancellationToken);
             };
 
-            using (var browser = await Puppeteer.LaunchAsync(options, TestConstants.LoggerFactory))
+            using (await Puppeteer.LaunchAsync(options, TestConstants.LoggerFactory))
             {
                 Assert.True(customSocketCreated);
             }
@@ -477,11 +476,11 @@ namespace PuppeteerSharp.Tests.PuppeteerTests
                 "netcoreapp2.0");
 #else
             return Path.Combine(
-            TestUtils.FindParentDirectory("lib"),
-            dir,
-            "bin",
-            build,
-            "net471");
+                TestUtils.FindParentDirectory("lib"),
+                dir,
+                "bin",
+                build,
+                "net471");
 #endif
         }
 

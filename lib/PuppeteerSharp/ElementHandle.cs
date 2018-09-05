@@ -19,6 +19,7 @@ namespace PuppeteerSharp
     public class ElementHandle : JSHandle
     {
         private readonly FrameManager _frameManager;
+        private readonly ILogger<ElementHandle> _logger;
 
         internal ElementHandle(
             ExecutionContext context,
@@ -30,6 +31,7 @@ namespace PuppeteerSharp
         {
             Page = page;
             _frameManager = frameManager;
+            _logger = client.LoggerFactory.CreateLogger<ElementHandle>();
         }
 
         internal Page Page { get; }
@@ -98,9 +100,31 @@ namespace PuppeteerSharp
         /// <returns>Task which resolves to a <see cref="byte"/>[] containing the image data.</returns>
         /// <param name="options">Screenshot options.</param>
         public async Task<byte[]> ScreenshotDataAsync(ScreenshotOptions options)
+            => Convert.FromBase64String(await ScreenshotBase64Async(options).ConfigureAwait(false));
+
+        /// <summary>
+        /// This method scrolls element into view if needed, and then uses <seealso cref="Page.ScreenshotBase64Async(ScreenshotOptions)"/> to take a screenshot of the element. 
+        /// If the element is detached from DOM, the method throws an error.
+        /// </summary>
+        /// <returns>Task which resolves to a <see cref="string"/> containing the image data as base64.</returns>
+        public Task<string> ScreenshotBase64Async() => ScreenshotBase64Async(new ScreenshotOptions());
+
+        /// <summary>
+        /// This method scrolls element into view if needed, and then uses <seealso cref="Page.ScreenshotBase64Async(ScreenshotOptions)"/> to take a screenshot of the element. 
+        /// If the element is detached from DOM, the method throws an error.
+        /// </summary>
+        /// <returns>Task which resolves to a <see cref="string"/> containing the image data as base64.</returns>
+        /// <param name="options">Screenshot options.</param>
+        public async Task<string> ScreenshotBase64Async(ScreenshotOptions options)
         {
             var needsViewportReset = false;
-            var boundingBox = await AssertBoundingBoxAsync().ConfigureAwait(false);
+            var boundingBox = await BoundingBoxAsync().ConfigureAwait(false);
+
+            if (boundingBox == null)
+            {
+                throw new PuppeteerException("Node is either not visible or not an HTMLElement");
+            }
+
             var viewport = Page.Viewport;
             if (boundingBox.Width > viewport.Width || boundingBox.Height > viewport.Height)
             {
@@ -117,8 +141,13 @@ namespace PuppeteerSharp
                 element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant'});
             }", this).ConfigureAwait(false);
 
-            boundingBox = await AssertBoundingBoxAsync().ConfigureAwait(false);
+            await ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
+            boundingBox = await BoundingBoxAsync().ConfigureAwait(false);
 
+            if (boundingBox == null)
+            {
+                throw new PuppeteerException("Node is either not visible or not an HTMLElement");
+            }
             var getLayoutMetricsResponse = await Client.SendAsync<GetLayoutMetricsResponse>("Page.getLayoutMetrics").ConfigureAwait(false);
 
             var clip = boundingBox;
@@ -126,7 +155,7 @@ namespace PuppeteerSharp
             clip.Y += getLayoutMetricsResponse.LayoutViewport.PageY;
 
             options.Clip = boundingBox.ToClip();
-            var imageData = await Page.ScreenshotDataAsync(options).ConfigureAwait(false);
+            var imageData = await Page.ScreenshotBase64Async(options).ConfigureAwait(false);
 
             if (needsViewportReset)
             {
@@ -142,7 +171,8 @@ namespace PuppeteerSharp
         /// <returns>Task which resolves when the element is successfully hovered</returns>
         public async Task HoverAsync()
         {
-            var (x, y) = await VisibleCenterAsync().ConfigureAwait(false);
+            await ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
+            var (x, y) = await ClickablePointAsync().ConfigureAwait(false);
             await Page.Mouse.MoveAsync(x, y).ConfigureAwait(false);
         }
 
@@ -154,7 +184,8 @@ namespace PuppeteerSharp
         /// <returns>Task which resolves when the element is successfully clicked</returns>
         public async Task ClickAsync(ClickOptions options = null)
         {
-            var (x, y) = await VisibleCenterAsync().ConfigureAwait(false);
+            await ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
+            var (x, y) = await ClickablePointAsync().ConfigureAwait(false);
             await Page.Mouse.ClickAsync(x, y, options).ConfigureAwait(false);
         }
 
@@ -178,7 +209,8 @@ namespace PuppeteerSharp
         /// <returns>Task which resolves when the element is successfully tapped</returns>
         public async Task TapAsync()
         {
-            var (x, y) = await VisibleCenterAsync().ConfigureAwait(false);
+            await ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
+            var (x, y) = await ClickablePointAsync().ConfigureAwait(false);
             await Page.Touchscreen.TapAsync(x, y).ConfigureAwait(false);
         }
 
@@ -333,20 +365,17 @@ namespace PuppeteerSharp
         {
             var result = await GetBoxModelAsync().ConfigureAwait(false);
 
-            if (result == null)
-            {
-                return null;
-            }
-
-            return new BoxModel
-            {
-                Content = FromProtocolQuad(result.Model.Content),
-                Padding = FromProtocolQuad(result.Model.Padding),
-                Border = FromProtocolQuad(result.Model.Border),
-                Margin = FromProtocolQuad(result.Model.Margin),
-                Width = result.Model.Width,
-                Height = result.Model.Height
-            };
+            return result == null
+                ? null
+                : new BoxModel
+                {
+                    Content = FromProtocolQuad(result.Model.Content),
+                    Padding = FromProtocolQuad(result.Model.Padding),
+                    Border = FromProtocolQuad(result.Model.Border),
+                    Margin = FromProtocolQuad(result.Model.Margin),
+                    Width = result.Model.Width,
+                    Height = result.Model.Height
+                };
         }
 
         /// <summary>
@@ -360,43 +389,89 @@ namespace PuppeteerSharp
                 RemoteObject.objectId
             }).ConfigureAwait(false);
 
-            if (string.IsNullOrEmpty(nodeInfo.Node.FrameId))
-            {
-                return null;
-            }
-            return _frameManager.Frames[nodeInfo.Node.FrameId];
+            return string.IsNullOrEmpty(nodeInfo.Node.FrameId) ? null : _frameManager.Frames[nodeInfo.Node.FrameId];
         }
 
-        private async Task<(decimal x, decimal y)> VisibleCenterAsync()
+        /// <summary>
+        /// Evaluates if the element is visible in the current viewport.
+        /// </summary>
+        /// <returns>A task which resolves to true if the element is visible in the current viewport.</returns>
+        public Task<bool> IsIntersectingViewportAsync()
+            => ExecutionContext.EvaluateFunctionAsync<bool>(@"async element =>
+            {
+                const visibleRatio = await new Promise(resolve =>
+                {
+                    const observer = new IntersectionObserver(entries =>
+                    {
+                        resolve(entries[0].intersectionRatio);
+                        observer.disconnect();
+                    });
+                    observer.observe(element);
+                });
+                return visibleRatio > 0;
+            }", this);
+
+        private async Task<(decimal x, decimal y)> ClickablePointAsync()
         {
-            await ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
-            var box = await AssertBoundingBoxAsync().ConfigureAwait(false);
+            GetContentQuadsResponse result = null;
+
+            try
+            {
+                result = await Client.SendAsync<GetContentQuadsResponse>("DOM.getContentQuads", new
+                {
+                    RemoteObject.objectId
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex.Message);
+            }
+
+            if (result == null || result.Quads.Length == 0)
+            {
+                throw new PuppeteerException("Node is either not visible or not an HTMLElement");
+            }
+
+            // Filter out quads that have too small area to click into.
+            var quads = result.Quads.Select(FromProtocolQuad).Where(q => ComputeQuadArea(q) > 1);
+            if (!quads.Any())
+            {
+                throw new PuppeteerException("Node is either not visible or not an HTMLElement");
+            }
+            // Return the middle point of the first quad.
+            var quad = quads.First();
+            var x = 0m;
+            var y = 0m;
+
+            foreach (var point in quad)
+            {
+                x += point.X;
+                y += point.Y;
+            }
 
             return (
-                x: box.X + (box.Width / 2),
-                y: box.Y + (box.Height / 2)
+                x: x / 4,
+                y: y / 4
             );
-        }
-
-        private async Task<BoundingBox> AssertBoundingBoxAsync()
-        {
-            var box = await BoundingBoxAsync().ConfigureAwait(false);
-            if (box != null)
-            {
-                return box;
-            }
-            throw new PuppeteerException("Node is either not visible or not an HTMLElement");
         }
 
         private async Task ScrollIntoViewIfNeededAsync()
         {
-            var errorMessage = await ExecutionContext.EvaluateFunctionAsync<string>(@"element => {
-                if (!element.isConnected)
-                    return 'Node is detached from document';
-                if (element.nodeType !== Node.ELEMENT_NODE)
-                    return 'Node is not of type HTMLElement';
-                element.scrollIntoViewIfNeeded();
-                return null;
+            var errorMessage = await ExecutionContext.EvaluateFunctionAsync<string>(@" async element => {
+              if (!element.isConnected)
+                return 'Node is detached from document';
+              if (element.nodeType !== Node.ELEMENT_NODE)
+                return 'Node is not of type HTMLElement';
+              const visibleRatio = await new Promise(resolve => {
+                const observer = new IntersectionObserver(entries => {
+                  resolve(entries[0].intersectionRatio);
+                  observer.disconnect();
+                });
+                observer.observe(element);
+              });
+              if (visibleRatio !== 1.0)
+                element.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
+              return false;
             }", this).ConfigureAwait(false);
 
             if (errorMessage != null)
@@ -421,12 +496,24 @@ namespace PuppeteerSharp
             }
         }
 
-        private BoxModelPoint[] FromProtocolQuad(decimal[] points) => new[]
+        private BoxModelPoint[] FromProtocolQuad(decimal[] quad) => new[]
         {
-            new BoxModelPoint{ X = points[0], Y = points[1] },
-            new BoxModelPoint{ X = points[2], Y = points[3] },
-            new BoxModelPoint{ X = points[4], Y = points[5] },
-            new BoxModelPoint{ X = points[6], Y = points[7] }
+            new BoxModelPoint{ X = quad[0], Y = quad[1] },
+            new BoxModelPoint{ X = quad[2], Y = quad[3] },
+            new BoxModelPoint{ X = quad[4], Y = quad[5] },
+            new BoxModelPoint{ X = quad[6], Y = quad[7] }
         };
+
+        private decimal ComputeQuadArea(BoxModelPoint[] quad)
+        {
+            var area = 0m;
+            for (var i = 0; i < quad.Length; ++i)
+            {
+                var p1 = quad[i];
+                var p2 = quad[(i + 1) % quad.Length];
+                area += ((p1.X * p2.Y) - (p2.X * p1.Y)) / 2;
+            }
+            return area;
+        }
     }
 }

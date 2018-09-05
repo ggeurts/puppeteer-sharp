@@ -3,7 +3,7 @@
 [![NuGet](https://buildstats.info/nuget/PuppeteerSharp)][NugetUrl]
 [![Build status](https://ci.appveyor.com/api/projects/status/pwfkjb0c4jfdo7lc/branch/master?svg=true&pendingText=master&failingText=master&passingText=master)][BuildUrl]
 [![Demo build status](https://ci.appveyor.com/api/projects/status/10g64a4aa0083wgf/branch/master?svg=true&pendingText=demo&failingText=demo&passingText=demo)][BuildDemoUrl]
-[![CodeFactor](https://www.codefactor.io/repository/github/ninetaillabs/varaniumsharp.initiator/badge)][CodeFactorUrl]
+[![CodeFactor](https://www.codefactor.io/repository/github/kblok/puppeteer-sharp/badge)][CodeFactorUrl]
 
 [NugetUrl]: https://www.nuget.org/packages/PuppeteerSharp/
 [BuildUrl]: https://ci.appveyor.com/project/kblok/puppeteer-sharp/branch/master
@@ -19,6 +19,10 @@ Puppeteer Sharp is a .NET port of the official [Node.JS Puppeteer API](https://g
 * [StackOverflow](https://stackoverflow.com/search?q=puppeteer-sharp)
 * [Issues](https://github.com/kblok/puppeteer-sharp/issues?utf8=%E2%9C%93&q=is%3Aissue)
 
+# Prerequisites
+
+ * As Puppeteer-Sharp is a NetStandard 2.0 library, The minimum platform versions are .NET Framework 4.6.1 and .NET Core 2.0. [Read more](https://docs.microsoft.com/en-us/dotnet/standard/net-standard).
+ * The minimum Windows versions supporting the WebSocket library are Windows 8 and Windows Server 2012. [Read more](https://docs.microsoft.com/en-us/dotnet/api/system.net.websockets?redirectedfrom=MSDN&view=netframework-4.7.2).
 
 # Usage
 
@@ -126,6 +130,7 @@ using (var browser = await PuppeteerSharp.Puppeteer.ConnectAsync(options))
 ```
 
 # Monthly reports
+ * [September 2018](http://www.hardkoded.com/blog/puppeteer-sharp-monthly-sep-2018)
  * [July 2018](https://www.hardkoded.com/blog/puppeteer-sharp-monthly-jul-2018)
  * [June 2018](http://www.hardkoded.com/blog/puppeteer-sharp-monthly-jun-2018)
  * [May 2018](http://www.hardkoded.com/blogs/puppeteer-sharp-monthly-may-2018)
@@ -135,6 +140,6 @@ using (var browser = await PuppeteerSharp.Puppeteer.ConnectAsync(options))
 
 # Progress
 
-* Tests on Google's Puppeteer: 445.
-* Tests on Puppeteer Sharp: 363.
-* Passing tests: 362.
+* Tests on Google's Puppeteer: 699.
+* Tests on Puppeteer Sharp: 436.
+* Passing tests: 435.

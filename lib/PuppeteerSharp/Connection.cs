@@ -1,6 +1,6 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -15,7 +15,7 @@ namespace PuppeteerSharp
     /// <summary>
     /// A connection handles the communication with a Chromium browser
     /// </summary>
-    public class Connection : IDisposable
+    public class Connection : IDisposable, IConnection
     {
         private readonly ILogger _logger;
 
@@ -27,22 +27,16 @@ namespace PuppeteerSharp
             WebSocket = ws;
 
             _logger = LoggerFactory.CreateLogger<Connection>();
-            _socketQueue = new TaskQueue();
-            _responses = new Dictionary<int, MessageTask>();
-            _sessions = new Dictionary<string, CDPSession>();
-            _websocketReaderCancellationSource = new CancellationTokenSource();
 
             Task.Factory.StartNew(GetResponseAsync);
         }
 
         #region Private Members
         private int _lastId;
-        private Dictionary<int, MessageTask> _responses;
-        private Dictionary<string, CDPSession> _sessions;
-        private TaskQueue _socketQueue;
-        private const string CloseMessage = "Browser.close";
-        private bool _stopReading;
-        private CancellationTokenSource _websocketReaderCancellationSource;
+        private readonly ConcurrentDictionary<int, MessageTask> _responses = new ConcurrentDictionary<int, MessageTask>();
+        private readonly ConcurrentDictionary<string, CDPSession> _sessions = new ConcurrentDictionary<string, CDPSession>();
+        private readonly TaskQueue _socketQueue = new TaskQueue();
+        private readonly CancellationTokenSource _websocketReaderCancellationSource = new CancellationTokenSource();
         #endregion
 
         #region Properties
@@ -50,17 +44,17 @@ namespace PuppeteerSharp
         /// Gets the WebSocket URL.
         /// </summary>
         /// <value>The URL.</value>
-        public string Url { get; private set; }
+        public string Url { get; }
         /// <summary>
         /// Gets the sleep time when a message is received.
         /// </summary>
         /// <value>The delay.</value>
-        public int Delay { get; private set; }
+        public int Delay { get; }
         /// <summary>
         /// Gets the WebSocket.
         /// </summary>
         /// <value>The web socket.</value>
-        public WebSocket WebSocket { get; private set; }
+        public WebSocket WebSocket { get; }
         /// <summary>
         /// Occurs when the connection is closed.
         /// </summary>
@@ -75,7 +69,11 @@ namespace PuppeteerSharp
         /// <value><c>true</c> if is closed; otherwise, <c>false</c>.</value>
         public bool IsClosed { get; internal set; }
 
-        internal ILoggerFactory LoggerFactory { get; }
+        /// <summary>
+        /// Gets the logger factory.
+        /// </summary>
+        /// <value>The logger factory.</value>
+        public ILoggerFactory LoggerFactory { get; }
 
         #endregion
 
@@ -83,6 +81,11 @@ namespace PuppeteerSharp
 
         internal async Task<dynamic> SendAsync(string method, dynamic args = null)
         {
+            if (IsClosed)
+            {
+                throw new TargetClosedException($"Protocol error({method}): Target closed.");
+            }
+
             var id = ++_lastId;
             var message = JsonConvert.SerializeObject(new Dictionary<string, object>
             {
@@ -93,65 +96,76 @@ namespace PuppeteerSharp
 
             _logger.LogTrace("Send ► {Id} Method {Method} Params {@Params}", id, method, (object)args);
 
-            _responses[id] = new MessageTask
+            var callback = new MessageTask
             {
                 TaskWrapper = new TaskCompletionSource<dynamic>(),
                 Method = method
             };
+            _responses.TryAdd(id, callback);
 
-            var encoded = Encoding.UTF8.GetBytes(message);
-            var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
-            await _socketQueue.Enqueue(() => WebSocket.SendAsync(buffer, WebSocketMessageType.Text, true, default)).ConfigureAwait(false);
-
-            if (method == CloseMessage)
+            try
             {
-                StopReading();
+                var encoded = Encoding.UTF8.GetBytes(message);
+                var buffer = new ArraySegment<byte>(encoded, 0, encoded.Length);
+                await _socketQueue.Enqueue(() => WebSocket.SendAsync(buffer, WebSocketMessageType.Text, true, default)).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (_responses.TryRemove(id, out _))
+                {
+                    callback.TaskWrapper.TrySetException(ex);
+                }
             }
 
-            return await _responses[id].TaskWrapper.Task.ConfigureAwait(false);
+            return await callback.TaskWrapper.Task.ConfigureAwait(false);
         }
-        
+
         internal async Task<T> SendAsync<T>(string method, dynamic args = null)
         {
             JToken response = await SendAsync(method, args).ConfigureAwait(false);
             return response.ToObject<T>();
         }
 
-        internal async Task<CDPSession> CreateSessionAsync(string targetId)
+        internal async Task<CDPSession> CreateSessionAsync(TargetInfo targetInfo)
         {
-            string sessionId = (await SendAsync("Target.attachToTarget", new { targetId }).ConfigureAwait(false)).sessionId;
-            var session = new CDPSession(this, targetId, sessionId);
-            _sessions.Add(sessionId, session);
+            string sessionId = (await SendAsync("Target.attachToTarget", new
+            {
+                targetId = targetInfo.TargetId
+            }).ConfigureAwait(false)).sessionId;
+            var session = new CDPSession(this, targetInfo.Type, sessionId);
+            _sessions.TryAdd(sessionId, session);
             return session;
         }
         #endregion
 
-        private void OnClose()
+        private void OnClose(Exception ex)
         {
-            if (!IsClosed)
+            if (IsClosed)
             {
-                _websocketReaderCancellationSource.Cancel();
-                Closed?.Invoke(this, new EventArgs());
+                return;
             }
-
-            foreach (var session in _sessions.Values)
-            {
-                session.OnClosed();
-            }
-
-            foreach (var response in _responses.Values.Where(r => !r.TaskWrapper.Task.IsCompleted))
-            {
-                response.TaskWrapper.SetException(new TargetClosedException(
-                    $"Protocol error({response.Method}): Target closed."
-                ));
-            }
-
-            _responses.Clear();
-            _sessions.Clear();
             IsClosed = true;
-        }
 
-        internal void StopReading() => _stopReading = true;
+            _websocketReaderCancellationSource.Cancel();
+            Closed?.Invoke(this, new EventArgs());
+
+            foreach (var entry in _sessions)
+            {
+                if (_sessions.TryRemove(entry.Key, out _))
+                {
+                    entry.Value.OnClosed();
+                }
+            }
+
+            foreach (var entry in _responses)
+            {
+                if (_responses.TryRemove(entry.Key, out _))
+                {
+                    entry.Value.TaskWrapper.TrySetException(
+                        new TargetClosedException($"Protocol error({entry.Value.Method}): Target closed.", ex));
+                }
+            }
+        }
 
         #region Private Methods
 
@@ -164,105 +178,86 @@ namespace PuppeteerSharp
             var buffer = new byte[2048];
 
             //If it's not in the list we wait for it
-            while (true)
+            while (!IsClosed)
             {
-                if (IsClosed)
-                {
-                    OnClose();
-                    return null;
-                }
-
                 var endOfMessage = false;
-                var response = string.Empty;
+                var response = new StringBuilder();
 
                 while (!endOfMessage)
                 {
-                    WebSocketReceiveResult result = null;
+                    WebSocketReceiveResult result;
                     try
                     {
                         result = await WebSocket.ReceiveAsync(
                             new ArraySegment<byte>(buffer),
                             _websocketReaderCancellationSource.Token).ConfigureAwait(false);
                     }
-                    catch (Exception) when (_stopReading)
-                    {
-                        return null;
-                    }
                     catch (OperationCanceledException)
                     {
                         return null;
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
-                        if (!IsClosed)
-                        {
-                            OnClose();
-                            return null;
-                        }
+                        OnClose(ex);
+                        return null;
                     }
 
                     endOfMessage = result.EndOfMessage;
 
                     if (result.MessageType == WebSocketMessageType.Text)
                     {
-                        response += Encoding.UTF8.GetString(buffer, 0, result.Count);
+                        response.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
                     }
                     else if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        OnClose();
+                        OnClose(null);
                         return null;
                     }
                 }
 
-                if (!string.IsNullOrEmpty(response))
+                if (response.Length > 0)
                 {
                     if (Delay > 0)
                     {
                         await Task.Delay(Delay).ConfigureAwait(false);
                     }
 
-                    ProcessResponse(response);
+                    ProcessResponse(response.ToString());
                 }
             }
+
+            return null;
         }
 
         private void ProcessResponse(string response)
         {
             dynamic obj = JsonConvert.DeserializeObject(response);
-            var objAsJObject = obj as JObject;
+            var objAsJObject = (JObject)obj;
 
             _logger.LogTrace("◀ Receive {Message}", response);
 
-            if (objAsJObject["id"] != null)
+            var id = (int?)objAsJObject["id"];
+            if (id.HasValue)
             {
-                var id = (int)objAsJObject["id"];
-
-                //If we get the object we are waiting for we return if
-                //if not we add this to the list, sooner or later some one will come for it 
-                if (!_responses.ContainsKey(id))
+                if (_responses.TryRemove(id.Value, out var callback))
                 {
-                    _responses[id] = new MessageTask { TaskWrapper = new TaskCompletionSource<dynamic>() };
+                    callback.TaskWrapper.TrySetResult(obj.result);
                 }
-
-                _responses[id].TaskWrapper.SetResult(obj.result);
             }
             else
             {
                 if (obj.method == "Target.receivedMessageFromTarget")
                 {
-                    var session = _sessions.GetValueOrDefault(objAsJObject["params"]["sessionId"].ToString());
-                    if (session != null)
+                    if (_sessions.TryGetValue(objAsJObject["params"]["sessionId"].ToString(), out var session))
                     {
                         session.OnMessage(objAsJObject["params"]["message"].ToString());
                     }
                 }
                 else if (obj.method == "Target.detachedFromTarget")
                 {
-                    var session = _sessions.GetValueOrDefault(objAsJObject["params"]["sessionId"].ToString());
-                    if (!(session?.IsClosed ?? true))
+                    if (_sessions.TryRemove(objAsJObject["params"]["sessionId"].ToString(), out var session) && !session.IsClosed)
                     {
                         session.OnClosed();
-                        _sessions.Remove(objAsJObject["params"]["sessionId"].ToString());
                     }
                 }
                 else
@@ -270,25 +265,23 @@ namespace PuppeteerSharp
                     MessageReceived?.Invoke(this, new MessageEventArgs
                     {
                         MessageID = obj.method,
-                        MessageData = objAsJObject["params"] as dynamic
+                        MessageData = objAsJObject["params"]
                     });
                 }
             }
         }
+
         #endregion
 
         #region Static Methods
 
         /// <summary>
-        /// Gets default <see cref="WebSocketFactory"/> implementation.
+        /// Gets default web socket factory implementation.
         /// </summary>
-        public static readonly WebSocketFactory DefaultWebSocketFactory = async (uri, options, cancellationToken) =>
+        public static readonly Func<Uri, IConnectionOptions, CancellationToken, Task<WebSocket>> DefaultWebSocketFactory = async (uri, options, cancellationToken) =>
         {
-            var result = new System.Net.WebSockets.ClientWebSocket();
-#pragma warning disable 618
-            result.Options.KeepAliveInterval = TimeSpan.FromMilliseconds(options.KeepAliveInterval);
-#pragma warning restore 618
-
+            var result = new ClientWebSocket();
+            // result.Options.KeepAliveInterval = TimeSpan.FromMilliseconds(options.KeepAliveInterval);
             await result.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
             return result;
         };
@@ -310,10 +303,15 @@ namespace PuppeteerSharp
         /// <see cref="Connection"/> was occupying.</remarks>
         public void Dispose()
         {
-            OnClose();
+            OnClose(new ObjectDisposedException($"Connection({Url})"));
             WebSocket.Dispose();
         }
+        #endregion
 
+        #region IConnection
+        ILoggerFactory IConnection.LoggerFactory => LoggerFactory;
+        bool IConnection.IsClosed => IsClosed;
+        Task<dynamic> IConnection.SendAsync(string method, dynamic args) => SendAsync(method, args);
         #endregion
     }
 }
